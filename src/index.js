@@ -57,6 +57,54 @@ async function ensureWebhookTable() {
 
 ensureWebhookTable();
 
+app.get("/", async (req, res) => {
+  const startedAt = new Date(process.uptime() ? Date.now() - process.uptime() * 1000 : Date.now());
+
+  // Prepare health payload
+  const health = {
+    service: "fm-webhooks",
+    status: "ok",
+    time: new Date().toISOString(),
+    uptimeSeconds: Math.round(process.uptime()),
+    startedAt: startedAt.toISOString(),
+    nodeVersion: process.version,
+    pid: process.pid,
+    env: {
+      port: process.env.PORT || "3000",
+      mysqlConfigured: !!(process.env.MYSQL_HOST && process.env.MYSQL_USER && process.env.MYSQL_PASSWORD && process.env.MYSQL_DATABASE),
+      fmConfigured: !!(process.env.FM_SERVER && process.env.FM_DB && process.env.FM_USER && process.env.FM_PASS && process.env.FM_SCRIPT),
+    },
+    mysql: {
+      enabled: !!pool,
+      reachable: null,
+      error: null,
+    },
+    filemaker: {
+      configured: !!(process.env.FM_SERVER && process.env.FM_DB && process.env.FM_USER && process.env.FM_PASS && process.env.FM_SCRIPT),
+    },
+  };
+
+  // MySQL ping if enabled
+  if (pool) {
+    try {
+      // Using a lightweight ping query
+      await pool.query("SELECT 1 AS ping");
+      health.mysql.reachable = true;
+    } catch (e) {
+      health.mysql.reachable = false;
+      health.mysql.error = e.message;
+      health.status = "degraded";
+    }
+  }
+
+  // If anything is clearly wrong, mark status
+  if (health.env.mysqlConfigured && !health.mysql.enabled) {
+    health.status = "degraded";
+  }
+
+  res.status(200).json(health);
+});
+
 // Generic handler for all paths
 app.post("*", async (req, res) => {
   const channelId = req.path.replace(/^\/+/, ""); // e.g., 'contact-verify' for '/contact-verify'
