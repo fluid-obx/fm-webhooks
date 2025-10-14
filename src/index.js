@@ -69,6 +69,7 @@ app.get("/", async (req, res) => {
   const health = {
     service: "fm-webhooks",
     status: "ok",
+    message: "aloha. i am computer. how are you being?",
     time: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
     startedAt: startedAt.toISOString(),
