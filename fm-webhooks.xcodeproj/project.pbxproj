@@ -6,10 +6,36 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXFileReference section */
+		55F1F3F52E9EF0ED0089DE0B /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		55F1F3F72E9EF10A0089DE0B /* .env */ = {isa = PBXFileReference; lastKnownFileType = text; path = .env; sourceTree = "<group>"; };
+		55F1F3F92E9EF1280089DE0B /* compose.env */ = {isa = PBXFileReference; lastKnownFileType = text; path = compose.env; sourceTree = "<group>"; };
+		55F1F3FA2E9EF18F0089DE0B /* package.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = package.json; sourceTree = "<group>"; };
+		55F1F3FE2E9EF2470089DE0B /* Dockerfile */ = {isa = PBXFileReference; lastKnownFileType = text; path = Dockerfile; sourceTree = "<group>"; };
+		55F1F3FF2E9EF2610089DE0B /* compose.yaml */ = {isa = PBXFileReference; lastKnownFileType = text.yaml; path = compose.yaml; sourceTree = "<group>"; };
+		55F1F4002E9EF2D50089DE0B /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		55F1F3FB2E9EF20E0089DE0B /* src */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = src;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXGroup section */
 		55F1F3EE2E9EF0B70089DE0B = {
 			isa = PBXGroup;
 			children = (
+				55F1F4002E9EF2D50089DE0B /* README.md */,
+				55F1F3F72E9EF10A0089DE0B /* .env */,
+				55F1F3F52E9EF0ED0089DE0B /* .gitignore */,
+				55F1F3F92E9EF1280089DE0B /* compose.env */,
+				55F1F3FF2E9EF2610089DE0B /* compose.yaml */,
+				55F1F3FE2E9EF2470089DE0B /* Dockerfile */,
+				55F1F3FA2E9EF18F0089DE0B /* package.json */,
+				55F1F3FB2E9EF20E0089DE0B /* src */,
 			);
 			sourceTree = "<group>";
 		};

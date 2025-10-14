@@ -1,0 +1,12 @@
+# Node
+node_modules
+.env
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# Logs
+npm-debug.log*
+.DS_Store
