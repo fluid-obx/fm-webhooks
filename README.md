@@ -1,6 +1,6 @@
 # FileMaker Webhook Service
 
-A lightweight Express-based service that receives incoming webhooks and forwards them to FileMaker Server's OData API. The full inbound request (including headers, method, path, body and query) is serialized and sent as the script parameter to a FileMaker script. The service then relays the script result back to the webhook caller.
+A lightweight Express-based service that receives incoming webhooks and forwards them to FileMaker Server’s OData API. The full inbound request, including headers, method, path, body, and query, is stored and sent as a script parameter to a FileMaker script. The service then relays the script’s result back to the webhook caller.
 
 ## Features
 - Accepts arbitrary webhook POST/GET requests
