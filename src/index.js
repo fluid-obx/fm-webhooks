@@ -5,7 +5,6 @@
 //  Created by David Morrison on 10/14/25.
 //
 
-
 import express from "express";
 import bodyParser from "body-parser";
 import mysql from "mysql2/promise";
@@ -16,7 +15,11 @@ dotenv.config();
 const app = express();
 app.use(bodyParser.json());
 
-// optional MySQL logging (enabled when all required env vars are set)
+// Respect MYSQL_LOGGING env flag (defaults to true when MySQL is fully configured and flag is absent)
+const mysqlLoggingEnv = (process.env.MYSQL_LOGGING || "").toString().trim().toLowerCase();
+const mysqlLoggingFlag = mysqlLoggingEnv === "true" || mysqlLoggingEnv === "1" || mysqlLoggingEnv === "yes";
+
+// Optional MySQL logging (requires config and MYSQL_LOGGING=true)
 let pool = null;
 const hasMySQLConfig =
   !!process.env.MYSQL_HOST &&
@@ -24,14 +27,16 @@ const hasMySQLConfig =
   !!process.env.MYSQL_PASSWORD &&
   !!process.env.MYSQL_DATABASE;
 
-if (hasMySQLConfig) {
+if (hasMySQLConfig && mysqlLoggingFlag) {
   pool = mysql.createPool({
     host: process.env.MYSQL_HOST,
     user: process.env.MYSQL_USER,
     password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_DATABASE,
   });
-  console.log("MySQL logging enabled.");
+  console.log("MySQL logging enabled (MYSQL_LOGGING=true).");
+} else if (hasMySQLConfig && !mysqlLoggingFlag) {
+  console.warn("MySQL logging disabled by flag: set MYSQL_LOGGING=true to enable.");
 } else {
   console.warn(
     "MySQL logging disabled: set MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, and MYSQL_DATABASE to enable."
@@ -72,10 +77,12 @@ app.get("/", async (req, res) => {
     env: {
       port: process.env.PORT || "3000",
       mysqlConfigured: !!(process.env.MYSQL_HOST && process.env.MYSQL_USER && process.env.MYSQL_PASSWORD && process.env.MYSQL_DATABASE),
+      mysqlLoggingFlag: mysqlLoggingFlag,
       fmConfigured: !!(process.env.FM_SERVER && process.env.FM_DB && process.env.FM_USER && process.env.FM_PASS && process.env.FM_SCRIPT),
     },
     mysql: {
       enabled: !!pool,
+      intendedByFlag: mysqlLoggingFlag,
       reachable: null,
       error: null,
     },
