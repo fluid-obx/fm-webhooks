@@ -129,7 +129,7 @@ app.post("*", async (req, res) => {
   });
 
   try {
-    // optional logging
+    // always attempt logging when pool is configured
     if (pool) {
       try {
         await pool.query(
@@ -141,10 +141,22 @@ app.post("*", async (req, res) => {
       }
     }
 
-    const fm = await runFmScript(scriptParam);
+    // Branch behavior based on channelId
+    if (channelId === "other-hooks") {
+      // Special handling for 'other-hooks' channel
+      // Respond with 200 OK and a simple acknowledgement payload
+      res.status(200).json({
+        status: "ok",
+        channel: channelId,
+        note: "Handled by other-hooks branch",
+      });
+    } else {
+      // Default: call FileMaker script
+      const fm = await runFmScript(scriptParam);
 
-    // relay FileMaker’s status and body directly
-    res.status(fm.status).json(fm.body);
+      // relay FileMaker’s status and body directly
+      res.status(fm.status).json(fm.body);
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

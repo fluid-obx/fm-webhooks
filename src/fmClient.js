@@ -14,7 +14,7 @@ export async function runFmScript(scriptParam) {
   const { FM_SERVER, FM_DB, FM_SCRIPT, FM_USER, FM_PASS } = process.env;
 
   const base = FM_SERVER?.replace(/\/$/, "");
-  const url = `${base}/fmi/odata/v4/${FM_DB}/${FM_SCRIPT}`;
+  const url = `${base}/fmi/odata/v4/${FM_DB}/Script.${FM_SCRIPT}`;
 
   const fmResp = await fetch(url, {
     method: "POST",
