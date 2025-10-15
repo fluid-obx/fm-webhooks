@@ -10,6 +10,7 @@ import bodyParser from "body-parser";
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 import { runFmScript } from "./fmClient.js";
+import crypto from "crypto";
 
 dotenv.config();
 const app = express();
@@ -49,11 +50,20 @@ async function ensureWebhookTable() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS webhooks (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        request_id VARCHAR(64) NOT NULL,
         source VARCHAR(255) NOT NULL,
+        endpoint VARCHAR(255) NOT NULL,
         payload JSON NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        response JSON NULL,
+        http_code INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_webhooks_endpoint_created_at (endpoint, created_at),
+        INDEX idx_webhooks_request_id (request_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+    try { await pool.query("CREATE INDEX idx_webhooks_endpoint_created_at ON webhooks (endpoint, created_at)"); } catch (_) {}
+    try { await pool.query("CREATE INDEX idx_webhooks_request_id ON webhooks (request_id)"); } catch (_) {}
+
     console.log("Verified webhooks table exists.");
   } catch (e) {
     console.error("Failed to verify/create webhooks table:", e.message);
@@ -61,6 +71,58 @@ async function ensureWebhookTable() {
 }
 
 ensureWebhookTable();
+
+// Simple Prometheus-compatible metrics (no external deps)
+const metrics = {
+  requestCount: 0,
+  fmCallCount: 0,
+  fmErrorCount: 0,
+  httpStatusCounts: {},
+  latencyBuckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10], // seconds
+  latencyHistogram: Array(9).fill(0),
+};
+
+function observeLatency(seconds) {
+  for (let i = 0; i < metrics.latencyBuckets.length; i++) {
+    if (seconds <= metrics.latencyBuckets[i]) { metrics.latencyHistogram[i]++; return; }
+  }
+  // overflow bucket not declared; extend array
+  metrics.latencyHistogram[metrics.latencyHistogram.length - 1]++;
+}
+
+function renderPromMetrics() {
+  const lines = [];
+  lines.push('# HELP webhook_requests_total Total number of webhook POST requests');
+  lines.push('# TYPE webhook_requests_total counter');
+  lines.push(`webhook_requests_total ${metrics.requestCount}`);
+
+  lines.push('# HELP webhook_filemaker_calls_total Total number of FileMaker calls');
+  lines.push('# TYPE webhook_filemaker_calls_total counter');
+  lines.push(`webhook_filemaker_calls_total ${metrics.fmCallCount}`);
+
+  lines.push('# HELP webhook_filemaker_errors_total Total number of FileMaker errors');
+  lines.push('# TYPE webhook_filemaker_errors_total counter');
+  lines.push(`webhook_filemaker_errors_total ${metrics.fmErrorCount}`);
+
+  lines.push('# HELP webhook_http_status_total Count of responses by HTTP status');
+  lines.push('# TYPE webhook_http_status_total counter');
+  for (const [code, count] of Object.entries(metrics.httpStatusCounts)) {
+    lines.push(`webhook_http_status_total{code="${code}"} ${count}`);
+  }
+
+  lines.push('# HELP webhook_latency_seconds Histogram of end-to-end request latency');
+  lines.push('# TYPE webhook_latency_seconds histogram');
+  let cumulative = 0;
+  for (let i = 0; i < metrics.latencyBuckets.length; i++) {
+    cumulative += metrics.latencyHistogram[i];
+    lines.push(`webhook_latency_seconds_bucket{le="${metrics.latencyBuckets[i]}"} ${cumulative}`);
+  }
+  const total = metrics.latencyHistogram.reduce((a,b)=>a+b,0);
+  lines.push(`webhook_latency_seconds_bucket{le="+Inf"} ${total}`);
+  lines.push(`webhook_latency_seconds_count ${total}`);
+  // sum not tracked precisely; omit to keep simple
+  return lines.join('\n') + '\n';
+}
 
 app.get("/", async (req, res) => {
   const startedAt = new Date(process.uptime() ? Date.now() - process.uptime() * 1000 : Date.now());
@@ -113,53 +175,117 @@ app.get("/", async (req, res) => {
   res.status(200).json(health);
 });
 
+// Protected logs endpoint (use LOGS_TOKEN)
+app.get('/logs', async (req, res) => {
+  const token = req.headers['authorization']?.toString().replace(/^Bearer\s+/i, '') || req.query.token;
+  if (!process.env.LOGS_TOKEN || token !== process.env.LOGS_TOKEN) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  if (!pool) return res.status(503).json({ error: 'logging disabled' });
+  try {
+    const [rows] = await pool.query('SELECT * FROM webhooks ORDER BY id DESC LIMIT 100');
+    res.status(200).json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Prometheus metrics endpoint
+app.get('/metrics', (req, res) => {
+  res.set('Content-Type', 'text/plain; version=0.0.4');
+  res.send(renderPromMetrics());
+});
+
 // Generic handler for all paths
 app.post("*", async (req, res) => {
-  const channelId = req.path.replace(/^\/+/, ""); // e.g., 'contact-verify' for '/contact-verify'
+  const endpoint = req.path.replace(/^\/+/, ""); // e.g., 'contact-verify' for '/contact-verify'
   const queryString = req.originalUrl.split("?")[1] || "";
+  const sourceHost = (req.headers["x-forwarded-host"] || req.headers["x-forwarded-for"] || req.headers["host"] || "").toString();
 
-  const scriptParam = JSON.stringify({
-    channelId,
-    source: channelId, // backward-compatible alias
+  const requestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  const userAgent = (req.headers['user-agent'] || '').toString();
+  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString();
+  const startedAtHr = process.hrtime.bigint();
+  metrics.requestCount++;
+
+  const payloadObj = {
+    requestId,
+    endpoint,
     path: req.path,
     queryString,
     httpCode: res.statusCode,
     headers: req.headers,
     body: req.body,
-  });
+    source: sourceHost,
+    userAgent,
+    clientIp
+  };
+  const scriptParam = JSON.stringify(payloadObj);
+
+  // Universal pre-insert for diagnostics
+  let insertedId = null;
+  if (pool) {
+    try {
+      const [result] = await pool.query(
+        "INSERT INTO webhooks (source, endpoint, payload, request_id) VALUES (?, ?, ?, ?)",
+        [sourceHost, endpoint, scriptParam, requestId]
+      );
+      insertedId = result.insertId || (result[0] && result[0].insertId) || null;
+    } catch (logErr) {
+      console.error("MySQL pre-insert failed:", logErr.message);
+    }
+  }
 
   try {
-    // always attempt logging when pool is configured
-    if (pool) {
+    // Branch behavior based on endpoint
+    let finalStatus = null;
+    let finalResponse = null;
+
+    if (endpoint === "other-hooks") {
+      // Special handling for 'other-hooks' channel
+      finalStatus = 200;
+      finalResponse = { status: "ok", channel: endpoint, note: "Handled by other-hooks branch" };
+    } else {
+      // Default: call FileMaker script first
+      metrics.fmCallCount++; // FileMaker call
+      const fm = await runFmScript(scriptParam);
+      finalStatus = fm.status;
+      finalResponse = fm.body;
+    }
+
+    const endedAtHr = process.hrtime.bigint();
+    const durationSec = Number(endedAtHr - startedAtHr) / 1e9;
+    observeLatency(durationSec);
+    metrics.httpStatusCounts[finalStatus] = (metrics.httpStatusCounts[finalStatus] || 0) + 1;
+
+    // Universal post-update for diagnostics
+    if (pool && insertedId) {
       try {
         await pool.query(
-          "INSERT INTO webhooks (source, payload) VALUES (?, ?)",
-          [channelId, scriptParam]
+          "UPDATE webhooks SET response = ?, http_code = ? WHERE id = ?",
+          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, insertedId]
         );
       } catch (logErr) {
-        console.error("MySQL logging failed:", logErr.message);
+        console.error("MySQL update failed:", logErr.message);
       }
     }
 
-    // Branch behavior based on channelId
-    if (channelId === "other-hooks") {
-      // Special handling for 'other-hooks' channel
-      // Respond with 200 OK and a simple acknowledgement payload
-      res.status(200).json({
-        status: "ok",
-        channel: channelId,
-        note: "Handled by other-hooks branch",
-      });
-    } else {
-      // Default: call FileMaker script
-      const fm = await runFmScript(scriptParam);
-
-      // relay FileMaker’s status and body directly
-      res.status(fm.status).json(fm.body);
-    }
+    // Send HTTP response with request id
+    res.set('X-Request-Id', requestId);
+    const bodyOut = (finalResponse && typeof finalResponse === 'object') ? { ...finalResponse, requestId } : finalResponse ?? { status: 'ok', requestId };
+    res.status(finalStatus || 200).json(bodyOut);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    metrics.fmErrorCount++;
+    if (pool && insertedId) {
+      try {
+        await pool.query(
+          "UPDATE webhooks SET response = ?, http_code = ? WHERE id = ?",
+          [JSON.stringify({ error: err.message }), 500, insertedId]
+        );
+      } catch (_) {}
+    }
+    return res.status(500).json({ error: err.message });
   }
 });
 
