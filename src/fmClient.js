@@ -15,7 +15,7 @@ export async function runFmScript(scriptParam) {
 
   const base = FM_SERVER?.replace(/\/$/, "");
   const url =
-    `${base}/fmi/odata/${encodeURIComponent(FM_DB)}.fmp12/${encodeURIComponent(FM_SCRIPT)}` +
+    `${base}/fmi/odata/v4/${encodeURIComponent(FM_DB)}.fmp12/${encodeURIComponent(FM_SCRIPT)}` +
     `?$fm.script.param=${encodeURIComponent(scriptParam)}`;
 
   const fmResp = await fetch(url, {
