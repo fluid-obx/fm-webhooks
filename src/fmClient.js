@@ -29,6 +29,9 @@ export async function runFmScript(scriptParam) {
   });
 
   const fmBody = await fmResp.json();
-  return { status: fmResp.status, body: fmBody };
-}
+  const result =
+    fmBody?.scriptResult?.resultParameter ??
+    fmBody?.scriptResult ??
+    fmBody; // fallback if structure differs
+  return { status: fmResp.status, body: result };
 
