@@ -29,9 +29,20 @@ export async function runFmScript(scriptParam) {
   });
 
   const fmBody = await fmResp.json();
-  const result =
-    fmBody?.scriptResult?.resultParameter ??
-    fmBody?.scriptResult ??
-    fmBody; // fallback if structure differs
-  return { status: fmResp.status, body: result };
-}
+
+    let resultText =
+      fmBody?.scriptResult?.resultParameter ??
+      fmBody?.scriptResult ??
+      fmBody;
+
+    let result;
+    try {
+      // handle cases where result is a JSON string like "{\"key\": ... }"
+      result = typeof resultText === "string" ? JSON.parse(resultText) : resultText;
+    } catch {
+      // fallback if it's plain text
+      result = resultText;
+    }
+
+    return { status: fmResp.status, body: result };
+  }
