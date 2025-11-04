@@ -258,12 +258,13 @@ app.post("*", async (req, res) => {
     observeLatency(durationSec);
     metrics.httpStatusCounts[finalStatus] = (metrics.httpStatusCounts[finalStatus] || 0) + 1;
 
-    // Universal post-update for diagnostics
+    // Universal post-update for diagnostics (includes duration)
     if (pool && insertedId) {
       try {
+        const durationMs = Math.round(durationSec * 1000);
         await pool.query(
-          "UPDATE webhooks SET response = ?, http_code = ? WHERE id = ?",
-          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, insertedId]
+          "UPDATE webhooks SET response = ?, http_code = ?, duration = ? WHERE id = ?",
+          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, durationMs, insertedId]
         );
       } catch (logErr) {
         console.error("MySQL update failed:", logErr.message);
