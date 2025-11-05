@@ -1,7 +1,14 @@
 services:
-  webhook:
+  fm-webhooks:
     build: .
     ports:
       - "3548:3000"
     env_file: .env
     container_name: fm-webhooks
+    networks:
+      - rmtt
+
+networks:
+  rmtt:
+    driver: bridge
+    external: true
