@@ -1,10 +1,18 @@
 services:
+<<<<<<< HEAD
   hookstation:
+=======
+  fm-webhooks:
+>>>>>>> main
     build: .
     ports:
       - "3548:3000"
     env_file: .env
+<<<<<<< HEAD
     container_name: hookstation
+=======
+    container_name: fm-webhooks
+>>>>>>> main
     networks:
       - rmtt
 
