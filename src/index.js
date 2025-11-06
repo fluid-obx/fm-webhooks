@@ -16,14 +16,13 @@ dotenv.config();
 const app = express();
 app.use(bodyParser.json());
 
-// Respect MYSQL_LOGGING env flag (defaults to true when MySQL is fully configured and flag is absent)
+// Respect MYSQL_LOGGING env flag
 const mysqlLoggingEnv = (process.env.MYSQL_LOGGING || "").toString().trim().toLowerCase();
 const mysqlLoggingFlag = mysqlLoggingEnv === "true" || mysqlLoggingEnv === "1" || mysqlLoggingEnv === "yes";
 
-// Optional MySQL logging (requires config and MYSQL_LOGGING=true)
+// Optional MySQL logging
 let pool = null;
-const hasMySQLConfig =
-  !!process.env.MYSQL_HOST &&
+const hasMySQLConfig = !!process.env.MYSQL_HOST &&
   !!process.env.MYSQL_USER &&
   !!process.env.MYSQL_PASSWORD &&
   !!process.env.MYSQL_DATABASE;
@@ -61,9 +60,6 @@ async function ensureWebhookTable() {
         INDEX idx_webhooks_request_id (request_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
-    try { await pool.query("CREATE INDEX idx_webhooks_endpoint_created_at ON webhooks (endpoint, created_at)"); } catch (_) {}
-    try { await pool.query("CREATE INDEX idx_webhooks_request_id ON webhooks (request_id)"); } catch (_) {}
-
     console.log("Verified webhooks table exists.");
   } catch (e) {
     console.error("Failed to verify/create webhooks table:", e.message);
@@ -72,62 +68,12 @@ async function ensureWebhookTable() {
 
 ensureWebhookTable();
 
-// Simple Prometheus-compatible metrics (no external deps)
-const metrics = {
-  requestCount: 0,
-  fmCallCount: 0,
-  fmErrorCount: 0,
-  httpStatusCounts: {},
-  latencyBuckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10], // seconds
-  latencyHistogram: Array(9).fill(0),
-};
-
-function observeLatency(seconds) {
-  for (let i = 0; i < metrics.latencyBuckets.length; i++) {
-    if (seconds <= metrics.latencyBuckets[i]) { metrics.latencyHistogram[i]++; return; }
-  }
-  // overflow bucket not declared; extend array
-  metrics.latencyHistogram[metrics.latencyHistogram.length - 1]++;
-}
-
-function renderPromMetrics() {
-  const lines = [];
-  lines.push('# HELP webhook_requests_total Total number of webhook POST requests');
-  lines.push('# TYPE webhook_requests_total counter');
-  lines.push(`webhook_requests_total ${metrics.requestCount}`);
-
-  lines.push('# HELP webhook_filemaker_calls_total Total number of FileMaker calls');
-  lines.push('# TYPE webhook_filemaker_calls_total counter');
-  lines.push(`webhook_filemaker_calls_total ${metrics.fmCallCount}`);
-
-  lines.push('# HELP webhook_filemaker_errors_total Total number of FileMaker errors');
-  lines.push('# TYPE webhook_filemaker_errors_total counter');
-  lines.push(`webhook_filemaker_errors_total ${metrics.fmErrorCount}`);
-
-  lines.push('# HELP webhook_http_status_total Count of responses by HTTP status');
-  lines.push('# TYPE webhook_http_status_total counter');
-  for (const [code, count] of Object.entries(metrics.httpStatusCounts)) {
-    lines.push(`webhook_http_status_total{code="${code}"} ${count}`);
-  }
-
-  lines.push('# HELP webhook_latency_seconds Histogram of end-to-end request latency');
-  lines.push('# TYPE webhook_latency_seconds histogram');
-  let cumulative = 0;
-  for (let i = 0; i < metrics.latencyBuckets.length; i++) {
-    cumulative += metrics.latencyHistogram[i];
-    lines.push(`webhook_latency_seconds_bucket{le="${metrics.latencyBuckets[i]}"} ${cumulative}`);
-  }
-  const total = metrics.latencyHistogram.reduce((a,b)=>a+b,0);
-  lines.push(`webhook_latency_seconds_bucket{le="+Inf"} ${total}`);
-  lines.push(`webhook_latency_seconds_count ${total}`);
-  // sum not tracked precisely; omit to keep simple
-  return lines.join('\n') + '\n';
-}
+// -----------------------------
+// Health & Logs endpoints
+// -----------------------------
 
 app.get("/", async (req, res) => {
   const startedAt = new Date(process.uptime() ? Date.now() - process.uptime() * 1000 : Date.now());
-
-  // Prepare health payload
   const health = {
     service: "fm-webhooks",
     status: "ok",
@@ -145,7 +91,6 @@ app.get("/", async (req, res) => {
     },
     mysql: {
       enabled: !!pool,
-      intendedByFlag: mysqlLoggingFlag,
       reachable: null,
       error: null,
     },
@@ -154,10 +99,8 @@ app.get("/", async (req, res) => {
     },
   };
 
-  // MySQL ping if enabled
   if (pool) {
     try {
-      // Using a lightweight ping query
       await pool.query("SELECT 1 AS ping");
       health.mysql.reachable = true;
     } catch (e) {
@@ -167,7 +110,6 @@ app.get("/", async (req, res) => {
     }
   }
 
-  // If anything is clearly wrong, mark status
   if (health.env.mysqlConfigured && !health.mysql.enabled) {
     health.status = "degraded";
   }
@@ -175,38 +117,33 @@ app.get("/", async (req, res) => {
   res.status(200).json(health);
 });
 
-// Protected logs endpoint (use LOGS_TOKEN)
-app.get('/logs', async (req, res) => {
-  const token = req.headers['authorization']?.toString().replace(/^Bearer\s+/i, '') || req.query.token;
+app.get("/logs", async (req, res) => {
+  const token = req.headers["authorization"]?.toString().replace(/^Bearer\s+/i, "") || req.query.token;
   if (!process.env.LOGS_TOKEN || token !== process.env.LOGS_TOKEN) {
-    return res.status(401).json({ error: 'unauthorized' });
+    return res.status(401).json({ error: "unauthorized" });
   }
-  if (!pool) return res.status(503).json({ error: 'logging disabled' });
+  if (!pool) return res.status(503).json({ error: "logging disabled" });
   try {
-    const [rows] = await pool.query('SELECT * FROM webhooks ORDER BY id DESC LIMIT 100');
+    const [rows] = await pool.query("SELECT * FROM webhooks ORDER BY id DESC LIMIT 100");
     res.status(200).json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Prometheus metrics endpoint
-app.get('/metrics', (req, res) => {
-  res.set('Content-Type', 'text/plain; version=0.0.4');
-  res.send(renderPromMetrics());
-});
+// -----------------------------
+// Webhook handling
+// -----------------------------
 
-// Generic handler for all paths
-app.post("*", async (req, res) => {
-  const endpoint = req.path.replace(/^\/+/, ""); // e.g., 'contact-verify' for '/contact-verify'
+// Route: /hooks/:endpoint  (Option 1 — keep /hooks externally)
+app.post("/hooks/:endpoint", async (req, res) => {
+  const endpoint = req.params.endpoint;
   const queryString = req.originalUrl.split("?")[1] || "";
   const sourceHost = (req.headers["x-forwarded-host"] || req.headers["x-forwarded-for"] || req.headers["host"] || "").toString();
 
-  const requestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
-  const userAgent = (req.headers['user-agent'] || '').toString();
-  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString();
-  const startedAtHr = process.hrtime.bigint();
-  metrics.requestCount++;
+  const requestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
+  const userAgent = (req.headers["user-agent"] || "").toString();
+  const clientIp = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString();
 
   const payloadObj = {
     requestId,
@@ -218,11 +155,10 @@ app.post("*", async (req, res) => {
     body: req.body,
     source: sourceHost,
     userAgent,
-    clientIp
+    clientIp,
   };
   const scriptParam = JSON.stringify(payloadObj);
 
-  // Universal pre-insert for diagnostics
   let insertedId = null;
   if (pool) {
     try {
@@ -230,54 +166,42 @@ app.post("*", async (req, res) => {
         "INSERT INTO webhooks (source, endpoint, payload, request_id) VALUES (?, ?, ?, ?)",
         [sourceHost, endpoint, scriptParam, requestId]
       );
-      insertedId = result.insertId || (result[0] && result[0].insertId) || null;
+      insertedId = result.insertId || null;
     } catch (logErr) {
       console.error("MySQL pre-insert failed:", logErr.message);
     }
   }
 
   try {
-    // Branch behavior based on endpoint
-    let finalStatus = null;
-    let finalResponse = null;
-
+    let finalStatus, finalResponse;
     if (endpoint === "other-hooks") {
-      // Special handling for 'other-hooks' channel
       finalStatus = 200;
       finalResponse = { status: "ok", channel: endpoint, note: "Handled by other-hooks branch" };
     } else {
-      // Default: call FileMaker script first
-      metrics.fmCallCount++; // FileMaker call
       const fm = await runFmScript(scriptParam);
       finalStatus = fm.status;
       finalResponse = fm.body;
     }
 
-    const endedAtHr = process.hrtime.bigint();
-    const durationSec = Number(endedAtHr - startedAtHr) / 1e9;
-    observeLatency(durationSec);
-    metrics.httpStatusCounts[finalStatus] = (metrics.httpStatusCounts[finalStatus] || 0) + 1;
-
-    // Universal post-update for diagnostics (includes duration)
     if (pool && insertedId) {
       try {
-        const durationMs = Math.round(durationSec * 1000);
         await pool.query(
-          "UPDATE webhooks SET response = ?, http_code = ?, duration = ? WHERE id = ?",
-          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, durationMs, insertedId]
+          "UPDATE webhooks SET response = ?, http_code = ? WHERE id = ?",
+          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, insertedId]
         );
       } catch (logErr) {
         console.error("MySQL update failed:", logErr.message);
       }
     }
 
-    // Send HTTP response with request id
-    res.set('X-Request-Id', requestId);
-    const bodyOut = (finalResponse && typeof finalResponse === 'object') ? { ...finalResponse, requestId } : finalResponse ?? { status: 'ok', requestId };
+    res.set("X-Request-Id", requestId);
+    const bodyOut =
+      finalResponse && typeof finalResponse === "object" ?
+      { ...finalResponse, requestId } :
+      finalResponse ?? { status: "ok", requestId };
     res.status(finalStatus || 200).json(bodyOut);
   } catch (err) {
     console.error(err);
-    metrics.fmErrorCount++;
     if (pool && insertedId) {
       try {
         await pool.query(
@@ -290,8 +214,14 @@ app.post("*", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`Webhook service listening on port ${PORT}`)
-);
+// Default route (non-/hooks): redirect to /hooks/:channel
+app.post("/:endpoint", (req, res) => {
+  const endpoint = req.params.endpoint;
+  const query = req.originalUrl.split("?")[1];
+  const redirectUrl = `/hooks/${endpoint}${query ? `?${query}` : ""}`;
+  console.log(`[Redirect] ${req.originalUrl} → ${redirectUrl}`);
+  return res.redirect(307, redirectUrl); // 307 preserves POST method and body
+});
 
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Webhook service listening on port ${PORT}`));
