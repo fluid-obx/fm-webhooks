@@ -1,6 +1,6 @@
 //
 //  index.js
-//  fm-webhooks
+//  hookstation
 //
 //  Created by David Morrison on 10/14/25.
 //
@@ -22,7 +22,8 @@ const mysqlLoggingFlag = mysqlLoggingEnv === "true" || mysqlLoggingEnv === "1" |
 
 // Optional MySQL logging
 let pool = null;
-const hasMySQLConfig = !!process.env.MYSQL_HOST &&
+const hasMySQLConfig =
+  !!process.env.MYSQL_HOST &&
   !!process.env.MYSQL_USER &&
   !!process.env.MYSQL_PASSWORD &&
   !!process.env.MYSQL_DATABASE;
@@ -43,6 +44,9 @@ if (hasMySQLConfig && mysqlLoggingFlag) {
   );
 }
 
+// ---------------------------------------
+// Ensure table exists
+// ---------------------------------------
 async function ensureWebhookTable() {
   if (!pool) return;
   try {
@@ -55,6 +59,7 @@ async function ensureWebhookTable() {
         payload JSON NOT NULL,
         response JSON NULL,
         http_code INT NULL,
+        duration INT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_webhooks_endpoint_created_at (endpoint, created_at),
         INDEX idx_webhooks_request_id (request_id)
@@ -71,11 +76,10 @@ ensureWebhookTable();
 // -----------------------------
 // Health & Logs endpoints
 // -----------------------------
-
 app.get("/", async (req, res) => {
   const startedAt = new Date(process.uptime() ? Date.now() - process.uptime() * 1000 : Date.now());
   const health = {
-    service: "fm-webhooks",
+    service: "hookstation",
     status: "ok",
     message: "aloha. i am the computer.",
     time: new Date().toISOString(),
@@ -85,9 +89,20 @@ app.get("/", async (req, res) => {
     pid: process.pid,
     env: {
       port: process.env.PORT || "3000",
-      mysqlConfigured: !!(process.env.MYSQL_HOST && process.env.MYSQL_USER && process.env.MYSQL_PASSWORD && process.env.MYSQL_DATABASE),
+      mysqlConfigured: !!(
+        process.env.MYSQL_HOST &&
+        process.env.MYSQL_USER &&
+        process.env.MYSQL_PASSWORD &&
+        process.env.MYSQL_DATABASE
+      ),
       mysqlLoggingFlag: mysqlLoggingFlag,
-      fmConfigured: !!(process.env.FM_SERVER && process.env.FM_DB && process.env.FM_USER && process.env.FM_PASS && process.env.FM_SCRIPT),
+      fmConfigured: !!(
+        process.env.FM_SERVER &&
+        process.env.FM_DB &&
+        process.env.FM_USER &&
+        process.env.FM_PASS &&
+        process.env.FM_SCRIPT
+      ),
     },
     mysql: {
       enabled: !!pool,
@@ -95,7 +110,13 @@ app.get("/", async (req, res) => {
       error: null,
     },
     filemaker: {
-      configured: !!(process.env.FM_SERVER && process.env.FM_DB && process.env.FM_USER && process.env.FM_PASS && process.env.FM_SCRIPT),
+      configured: !!(
+        process.env.FM_SERVER &&
+        process.env.FM_DB &&
+        process.env.FM_USER &&
+        process.env.FM_PASS &&
+        process.env.FM_SCRIPT
+      ),
     },
   };
 
@@ -134,14 +155,19 @@ app.get("/logs", async (req, res) => {
 // -----------------------------
 // Webhook handling
 // -----------------------------
-
-// Route: /hooks/:endpoint  (Option 1 — keep /hooks externally)
 app.post("/hooks/:endpoint", async (req, res) => {
   const endpoint = req.params.endpoint;
   const queryString = req.originalUrl.split("?")[1] || "";
-  const sourceHost = (req.headers["x-forwarded-host"] || req.headers["x-forwarded-for"] || req.headers["host"] || "").toString();
+  const sourceHost = (
+    req.headers["x-forwarded-host"] ||
+    req.headers["x-forwarded-for"] ||
+    req.headers["host"] ||
+    ""
+  ).toString();
 
-  const requestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
+  const requestId = crypto.randomUUID
+    ? crypto.randomUUID()
+    : crypto.randomBytes(16).toString("hex");
   const userAgent = (req.headers["user-agent"] || "").toString();
   const clientIp = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString();
 
@@ -172,6 +198,8 @@ app.post("/hooks/:endpoint", async (req, res) => {
     }
   }
 
+  const startTime = Date.now();
+
   try {
     let finalStatus, finalResponse;
     if (endpoint === "other-hooks") {
@@ -183,11 +211,13 @@ app.post("/hooks/:endpoint", async (req, res) => {
       finalResponse = fm.body;
     }
 
+    const duration = Date.now() - startTime;
+
     if (pool && insertedId) {
       try {
         await pool.query(
-          "UPDATE webhooks SET response = ?, http_code = ? WHERE id = ?",
-          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, insertedId]
+          "UPDATE webhooks SET response = ?, http_code = ?, duration = ? WHERE id = ?",
+          [JSON.stringify(finalResponse ?? null), finalStatus ?? null, duration, insertedId]
         );
       } catch (logErr) {
         console.error("MySQL update failed:", logErr.message);
@@ -196,21 +226,22 @@ app.post("/hooks/:endpoint", async (req, res) => {
 
     res.set("X-Request-Id", requestId);
     const bodyOut =
-      finalResponse && typeof finalResponse === "object" ?
-      { ...finalResponse, requestId } :
-      finalResponse ?? { status: "ok", requestId };
+      finalResponse && typeof finalResponse === "object"
+        ? { ...finalResponse, requestId, duration }
+        : { status: "ok", requestId, duration };
     res.status(finalStatus || 200).json(bodyOut);
   } catch (err) {
+    const duration = Date.now() - startTime;
     console.error(err);
     if (pool && insertedId) {
       try {
         await pool.query(
-          "UPDATE webhooks SET response = ?, http_code = ? WHERE id = ?",
-          [JSON.stringify({ error: err.message }), 500, insertedId]
+          "UPDATE webhooks SET response = ?, http_code = ?, duration = ? WHERE id = ?",
+          [JSON.stringify({ error: err.message }), 500, duration, insertedId]
         );
       } catch (_) {}
     }
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message, duration });
   }
 });
 
@@ -220,7 +251,7 @@ app.post("/:endpoint", (req, res) => {
   const query = req.originalUrl.split("?")[1];
   const redirectUrl = `/hooks/${endpoint}${query ? `?${query}` : ""}`;
   console.log(`[Redirect] ${req.originalUrl} → ${redirectUrl}`);
-  return res.redirect(307, redirectUrl); // 307 preserves POST method and body
+  return res.redirect(307, redirectUrl); // preserves POST method and body
 });
 
 const PORT = process.env.PORT || 3000;

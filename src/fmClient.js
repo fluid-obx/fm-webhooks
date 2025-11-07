@@ -30,19 +30,35 @@ export async function runFmScript(scriptParam) {
 
   const fmBody = await fmResp.json();
 
-    let resultText =
-      fmBody?.scriptResult?.resultParameter ??
-      fmBody?.scriptResult ??
-      fmBody;
+  let resultText =
+    fmBody?.scriptResult?.resultParameter ??
+    fmBody?.scriptResult?.code ??
+    fmBody?.scriptResult ??
+    fmBody;
 
-    let result;
-    try {
-      // handle cases where result is a JSON string like "{\"key\": ... }"
-      result = typeof resultText === "string" ? JSON.parse(resultText) : resultText;
-    } catch {
-      // fallback if it's plain text
-      result = resultText;
-    }
+  // Extract optional body/httpCode fields
+  let httpCode, bodyCandidate;
 
-    return { status: fmResp.status, body: result };
+  if (typeof resultText === "object" && resultText !== null) {
+    httpCode = Number(resultText.httpCode);
+    bodyCandidate = resultText.body ?? resultText;
+  } else {
+    bodyCandidate = resultText;
   }
+
+  let result;
+  try {
+    result =
+      typeof bodyCandidate === "string"
+        ? JSON.parse(bodyCandidate)
+        : bodyCandidate;
+  } catch {
+    result = bodyCandidate;
+  }
+
+  const finalStatus =
+    Number.isInteger(httpCode) && httpCode >= 100 && httpCode < 600
+      ? httpCode
+      : fmResp.status;
+
+  return { status: finalStatus, body: result };
