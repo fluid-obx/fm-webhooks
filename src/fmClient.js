@@ -62,3 +62,5 @@ export async function runFmScript(scriptParam) {
       : fmResp.status;
 
   return { status: finalStatus, body: result };
+
+}
