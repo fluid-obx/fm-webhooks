@@ -158,6 +158,7 @@ app.get("/logs", async (req, res) => {
 app.post("/hooks/:endpoint", async (req, res) => {
   const endpoint = req.params.endpoint;
   const queryString = req.originalUrl.split("?")[1] || "";
+  const queryJSON = req.query && Object.keys(req.query).length ? req.query : {};
   const sourceHost = (
     req.headers["x-forwarded-host"] ||
     req.headers["x-forwarded-for"] ||
@@ -176,6 +177,7 @@ app.post("/hooks/:endpoint", async (req, res) => {
     endpoint,
     path: req.path,
     queryString,
+    queryJSON,
     httpCode: res.statusCode,
     headers: req.headers,
     body: req.body,
